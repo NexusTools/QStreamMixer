@@ -2,6 +2,8 @@
 #include "ui_mainwindow.h"
 
 #include <QLabel>
+#include <QCloseEvent>
+#include <QMessageBox>
 #include <QStandardItemModel>
 #include <QListWidgetItem>
 #include <QComboBox>
@@ -15,12 +17,26 @@ MainWindow::MainWindow(QWidget *parent) :
     ui(new Ui::MainWindow)
 {
     ui->setupUi(this);
+    ui->progressBar->setAttribute(Qt::WA_MacMiniSize);
+    connect(ui->actionRefresh, SIGNAL(triggered()), this, SLOT(refreshDevices()));
     ui->tableWidget->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
     ui->tableWidget->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Fixed);
     ui->tableWidget->setColumnWidth(1, 80);
 
+    refreshDevices();
+}
+
+void MainWindow::refreshDevices() {
+    qDebug() << "Updating Devices";
+
+    ui->progressBar->show();
+    ui->addStream->setEnabled(false);
+    ui->tableWidget->setEnabled(false);
+    ui->startRecording->setEnabled(false);
+    ui->actionRefresh->setEnabled(false);
+    ui->status->setText("Parsing Device List...");
+    processConnection = connect(&process, SIGNAL(finished(int)), this, SLOT(readListOutput()));
     process.start("pactl list sources");
-    connect(&process, SIGNAL(finished(int)), this, SLOT(readListOutput()));
 }
 
 #ifdef Q_OS_LINUX
@@ -29,6 +45,7 @@ void MainWindow::readListOutput() {
     static QRegExp deviceDescRegExp("^\\s+device\\.description = \"(.+)\"\\s*$");
     if(!deviceDescRegExp.isValid())
         qWarning() << deviceDescRegExp.errorString();
+    disconnect(processConnection);
 
     QString alsaDeviceName;
     //QDebug debug(QtDebugMsg);
@@ -50,13 +67,43 @@ void MainWindow::readListOutput() {
     ui->addStream->setEnabled(true);
     ui->tableWidget->setEnabled(true);
     ui->startRecording->setEnabled(true);
+    ui->actionRefresh->setEnabled(true);
     ui->status->setText("Ready");
     ui->progressBar->hide();
-    on_addStream_clicked();
+
+    if(ui->tableWidget->rowCount() == 0)
+        on_addStream_clicked();
+    else {
+        // TODO: Clear hanging pointers
+        updateSelections();
+    }
 }
 #else
 #error Only supported on Linux with PulseAudio at this time.
 #endif
+
+bool MainWindow::event(QEvent *ev) {
+    static QMessageBox* messageBox = 0;
+    if(ev->type() == QEvent::Close && !messageBox
+            && ui->progressBar->isVisible()) {
+        ((QCloseEvent*)ev)->ignore();
+        messageBox = new QMessageBox(QMessageBox::Question, "Cancel Operation",
+                                                  "An operation is currently being performed, cancel it and exit?",
+                                                  QMessageBox::Yes | QMessageBox::No, this);
+        connect(messageBox, &QMessageBox::finished, [=] (int code) {
+            if(code != QMessageBox::No) {
+                if(ui->startRecording->isEnabled())
+                    ui->startRecording->click();
+                ui->progressBar->setVisible(false);
+                close();
+            }
+            messageBox = 0;
+        });
+        messageBox->show();
+        return true;
+    }
+    return QMainWindow::event(ev);
+}
 
 void MainWindow::updateSelections() {
     QStringList selectedDevices;
@@ -64,7 +111,6 @@ void MainWindow::updateSelections() {
         QComboBox* rowCombo = (QComboBox*)ui->tableWidget->cellWidget(i, 0);
         selectedDevices << rowCombo->currentData().toString();
     }
-    qDebug() << "Updating Selections" << selectedDevices;
     for(int i=0; i<ui->tableWidget->rowCount(); i++) {
         QComboBox* rowCombo = (QComboBox*)ui->tableWidget->cellWidget(i, 0);
         const QStandardItemModel* model = qobject_cast<const QStandardItemModel*>(rowCombo->model());
@@ -74,12 +120,10 @@ void MainWindow::updateSelections() {
 
             QVariant value;
             QStandardItem* item = model->item(r);
-            if(selectedDevices.contains(item->data(Qt::UserRole).toString()))
-                value = 0;
-            else {
-                qDebug() << "Enabling" << item->text();
+            if(!selectedDevices.contains(item->data(Qt::UserRole).toString()))
                 value = 1 | 32;
-            }
+            else
+                value = 0;
             item->setData(value, Qt::UserRole - 1);
         }
     }
@@ -160,6 +204,7 @@ void MainWindow::on_addStream_clicked()
 void MainWindow::on_startRecording_clicked() {
     ui->addStream->setEnabled(false);
     ui->tableWidget->setEnabled(false);
+    ui->actionRefresh->setEnabled(false);
 
     ui->status->setText("Opening Streams...");
     ui->startRecording->setText("Cancel");

@@ -21,6 +21,7 @@ public:
 
 protected slots:
     void readListOutput();
+    void refreshDevices();
 
 private slots:
     void on_addStream_clicked();
@@ -28,8 +29,10 @@ private slots:
 
 protected:
     void updateSelections(QStringList disabledDevices);
+    bool event(QEvent *ev);
 
 private:
+    QMetaObject::Connection processConnection;
     QHash<QString, QString> devices;
     QList<AVConv*> activeStreams;
     QList<AVConv*> streams;
